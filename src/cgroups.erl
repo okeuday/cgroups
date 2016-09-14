@@ -68,7 +68,7 @@
                         {version_default_required, boolean()} |
                         {path_v1, string()} |
                         {path_v2, string()} |
-                        {path_mounts, string()}).
+                        {path_mounts, string() | undefined}).
 -export_type([options/0]).
 
 %%%------------------------------------------------------------------------
@@ -128,9 +128,12 @@ new(Options0) ->
     [] = OptionsN,
     true = is_integer(VersionDefault) andalso (VersionDefault > 0),
     true = is_boolean(VersionDefaultRequired),
-    true = is_list(PathV1) andalso is_integer(hd(PathV1)),
-    true = is_list(PathV2) andalso is_integer(hd(PathV2)),
-    true = is_list(PathMounts) andalso is_integer(hd(PathMounts)),
+    true = is_list(PathV1) andalso
+           ($/ == hd(lists:reverse(PathV1))) andalso (length(PathV1) > 1),
+    true = is_list(PathV2) andalso
+           ($/ == hd(lists:reverse(PathV2))) andalso (length(PathV2) > 1),
+    true = (PathMounts =:= undefined) orelse
+           (is_list(PathMounts) andalso is_integer(hd(PathMounts))),
     new_state(VersionDefault, VersionDefaultRequired,
               PathV1, PathV2, PathMounts).
 
@@ -222,6 +225,8 @@ new_state_init(2 = Version, false, Path) ->
             {error, {path_v2, Status, Output}}
     end.
 
+new_paths(PathV1, PathV2, undefined) ->
+    {ok, {false, PathV1}, {false, PathV2}};
 new_paths(PathV1, PathV2, PathMounts) ->
     case shell("cat \"~s\"", [PathMounts]) of
         {0, Mounts} ->
@@ -254,9 +259,9 @@ new_mounts([], PathV1, PathV2) ->
 new_mounts([Mount | MountsL], PathV1, PathV2) ->
     case string:tokens(Mount, " ") of
         [_, NewPathV1, "cgroup" | _] ->
-            new_mounts(MountsL, NewPathV1, PathV2);
+            new_mounts(MountsL, NewPathV1 ++ "/", PathV2);
         [_, NewPathV2, "cgroup2" | _] ->
-            new_mounts(MountsL, PathV1, NewPathV2);
+            new_mounts(MountsL, PathV1, NewPathV2 ++ "/");
         _ ->
             new_mounts(MountsL, PathV1, PathV2)
     end.

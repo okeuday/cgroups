@@ -10,8 +10,8 @@
    {env, [
         {version_default, 2},
         {version_default_required, false},
-        {path_v1, "/sys/fs/cgroup"},
-        {path_v2, "/sys/fs/cgroup2"},
+        {path_v1, "/sys/fs/cgroup/"},
+        {path_v2, "/sys/fs/cgroup2/"},
         {path_mounts, "/proc/mounts"}
         ]}]}.
 
