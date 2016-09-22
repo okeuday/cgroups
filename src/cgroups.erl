@@ -44,17 +44,20 @@
 %%%
 %%% @author Michael Truog <mjtruog [at] gmail (dot) com>
 %%% @copyright 2016 Michael Truog
-%%% @version 1.5.3 {@date} {@time}
+%%% @version 1.5.4 {@date} {@time}
 %%%------------------------------------------------------------------------
 
 -module(cgroups).
 -author('mjtruog [at] gmail (dot) com').
 
 %% external interface
--export([destroy/1,
+-export([create/4,
+         destroy/1,
          new/0,
          new/1,
-         shell/2]).
+         shell/2,
+         update/4,
+         update_or_create/4]).
 
 -record(cgroups,
     {
@@ -74,6 +77,35 @@
 %%%------------------------------------------------------------------------
 %%% External interface functions
 %%%------------------------------------------------------------------------
+
+%%-------------------------------------------------------------------------
+%% @doc
+%% ===.===
+%% @end
+%%-------------------------------------------------------------------------
+
+-spec create(CGroupPath :: string(),
+             OSPids :: list(pos_integer()),
+             CGroupParameters :: list({string(), string()}),
+             State :: #cgroups{}) ->
+    {ok, #cgroups{}} |
+    {error, any()}.
+
+create(CGroupPath, OSPids, CGroupParameters,
+       #cgroups{path = Path} = State) ->
+    true = cgroup_path_valid(CGroupPath),
+    CGroupPathFull = Path ++ CGroupPath,
+    case filelib:is_dir(CGroupPathFull) of
+        true ->
+            {error, {exists, CGroupPathFull}};
+        false ->
+            case shell("mkdir -p \"~s\"", [CGroupPathFull]) of
+                {0, _} ->
+                    update(CGroupPath, OSPids, CGroupParameters, State);
+                {Status, Output} ->
+                    {error, {mkdir, Status, Output}}
+            end
+    end.
 
 %%-------------------------------------------------------------------------
 %% @doc
@@ -154,6 +186,65 @@ shell(Command, Arguments) ->
     Exec = io_lib:format(Command, Arguments),
     true = erlang:port_command(Shell, ["exec ", Exec, "\n"]),
     shell_output(Shell, []).
+
+%%-------------------------------------------------------------------------
+%% @doc
+%% ===.===
+%% @end
+%%-------------------------------------------------------------------------
+
+-spec update(CGroupPath :: string(),
+             OSPids :: list(pos_integer()),
+             CGroupParameters :: list({string(), string()}),
+             State :: #cgroups{}) ->
+    {ok, #cgroups{}} |
+    {error, any()}.
+
+update(CGroupPath, OSPids, CGroupParameters,
+       #cgroups{version = Version,
+                path = Path} = State) ->
+    true = cgroup_path_valid(CGroupPath),
+    CGroupPathFull = Path ++ CGroupPath,
+    case update_parameters(CGroupParameters, Version, CGroupPathFull) of
+        ok ->
+            case update_pids(OSPids, Version, CGroupPathFull) of
+                ok ->
+                    {ok, State};
+                {error, _} = Error ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+%%-------------------------------------------------------------------------
+%% @doc
+%% ===.===
+%% @end
+%%-------------------------------------------------------------------------
+
+-spec update_or_create(CGroupPath :: string(),
+                       OSPids :: list(pos_integer()),
+                       CGroupParameters :: list({string(), string()}),
+                       State :: #cgroups{}) ->
+    {ok, #cgroups{}} |
+    {error, any()}.
+
+update_or_create(CGroupPath, OSPids, CGroupParameters,
+                 #cgroups{path = Path} = State) ->
+    true = cgroup_path_valid(CGroupPath),
+    CGroupPathFull = Path ++ CGroupPath,
+    case filelib:is_dir(CGroupPathFull) of
+        true ->
+            update(CGroupPath, OSPids, CGroupParameters, State);
+        false ->
+            case shell("mkdir -p \"~s\"", [CGroupPathFull]) of
+                {0, _} ->
+                    update(CGroupPath, OSPids, CGroupParameters, State);
+                {Status, Output} ->
+                    {error, {mkdir, Status, Output}}
+            end
+    end.
 
 %%%------------------------------------------------------------------------
 %%% Private functions
@@ -265,6 +356,65 @@ new_mounts([Mount | MountsL], PathV1, PathV2) ->
         _ ->
             new_mounts(MountsL, PathV1, PathV2)
     end.
+
+subsystem([_ | _] = SubsystemParameter) ->
+    {Subsystem, _} = lists:splitwith(fun(C) -> C /= $. end, SubsystemParameter),
+    Subsystem.
+
+update_parameters(CGroupParameters, 1, CGroupPathFull) ->
+    update_parameters(CGroupParameters, CGroupPathFull);
+update_parameters(CGroupParameters, 2, CGroupPathFull) ->
+    Controllers = lists:usort([subsystem(SubsystemParameter)
+                               || {SubsystemParameter, _} <- CGroupParameters]),
+    ControlAdded = ["+" ++ Controller || Controller <- Controllers],
+    ControlRemoved = ["-" ++ Controller || Controller <- Controllers],
+    CGroupSubPathFull = filename:dirname(CGroupPathFull) ++ "/",
+    case shell("echo \"~s\" > \"~s/cgroup.subtree_control\"",
+               [string:join(ControlAdded, " "),
+                CGroupSubPathFull]) of
+        {0, _} ->
+            Result = update_parameters(CGroupParameters, CGroupPathFull),
+            case shell("echo \"~s\" > \"~s/cgroup.subtree_control\"",
+                       [string:join(ControlRemoved, " "),
+                        CGroupSubPathFull]) of
+                {0, _} ->
+                    Result;
+                {Status, Output} ->
+                    {error, {subtree_control, Status, Output}}
+            end;
+        {Status, Output} ->
+            {error, {subtree_control, Status, Output}}
+    end.
+
+update_parameters([], _) ->
+    ok;
+update_parameters([{SubsystemParameter, Value} | CGroupParameters],
+                  CGroupPathFull) ->
+    case shell("echo \"~s\" > \"~s/~s\"",
+               [Value, CGroupPathFull, SubsystemParameter]) of
+        {0, _} ->
+            update_parameters(CGroupParameters, CGroupPathFull);
+        {Status, Output} ->
+            {error, {subsystem_parameter, Status, Output}}
+    end.
+
+update_pids(OSPids, _, CGroupPathFull) ->
+    update_pids(OSPids, CGroupPathFull).
+
+update_pids([], _) ->
+    ok;
+update_pids([OSPid | OSPids], CGroupPathFull) ->
+    case shell("echo \"~w\" > \"~s/cgroup.procs\"",
+               [OSPid, CGroupPathFull]) of
+        {0, _} ->
+            update_pids(OSPids, CGroupPathFull);
+        {Status, Output} ->
+            {error, {procs, Status, Output}}
+    end.
+
+cgroup_path_valid([_ | _] = CGroupPath) ->
+    ($/ /= hd(CGroupPath)) andalso
+    ($/ /= hd(lists:reverse(CGroupPath))).
 
 option(Key, Options) ->
     case lists:keytake(Key, 1, Options) of
