@@ -253,6 +253,17 @@ update(CGroupPath, OSPids, CGroupParameters,
        #cgroups{version = Version,
                 path = Path}) ->
     true = cgroup_path_valid(CGroupPath),
+    true = lists:all(fun(OSPid) ->
+        is_integer(OSPid) andalso (OSPid > 0)
+    end, OSPids),
+    true = lists:all(fun(CGroupParameter) ->
+        case CGroupParameter of
+            {[_ | _], Value} when is_list(Value) ->
+                true;
+            _ ->
+                false
+        end
+    end, CGroupParameters),
     CGroupPathFull = Path ++ CGroupPath,
     case update_parameters(CGroupParameters, Version, CGroupPathFull, Path) of
         ok ->
@@ -671,7 +682,10 @@ cgroup_path_valid([]) ->
     true;
 cgroup_path_valid([_ | _] = CGroupPath) ->
     ($/ /= hd(CGroupPath)) andalso
-    ($/ /= hd(lists:reverse(CGroupPath))).
+    ($/ /= hd(lists:reverse(CGroupPath))) andalso
+    lists:all(fun(C) ->
+         C /= $"
+    end, CGroupPath).
 
 option(Key, Options) ->
     case lists:keytake(Key, 1, Options) of
