@@ -258,8 +258,8 @@ update(CGroupPath, OSPids, CGroupParameters,
     end, OSPids),
     true = lists:all(fun(CGroupParameter) ->
         case CGroupParameter of
-            {[_ | _], Value} when is_list(Value) ->
-                true;
+            {[_ | _] = SubsystemParameter, Value} when is_list(Value) ->
+                quoteless(SubsystemParameter) andalso quoteless(Value);
             _ ->
                 false
         end
@@ -683,9 +683,12 @@ cgroup_path_valid([]) ->
 cgroup_path_valid([_ | _] = CGroupPath) ->
     ($/ /= hd(CGroupPath)) andalso
     ($/ /= hd(lists:reverse(CGroupPath))) andalso
+    quoteless(CGroupPath).
+
+quoteless(String) ->
     lists:all(fun(C) ->
          C /= $"
-    end, CGroupPath).
+    end, String).
 
 option(Key, Options) ->
     case lists:keytake(Key, 1, Options) of
