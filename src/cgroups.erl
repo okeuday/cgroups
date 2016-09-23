@@ -52,6 +52,8 @@
 
 %% external interface
 -export([create/4,
+         delete/2,
+         delete_recursive/2,
          destroy/1,
          new/0,
          new/1,
@@ -80,18 +82,20 @@
 
 %%-------------------------------------------------------------------------
 %% @doc
-%% ===.===
+%% ===Create a specific cgroup.===
+%% Files cpuset.cpus and cpuset.mems are set if they are not initialized
+%% due to cgroup.clone_children (using the root values).
 %% @end
 %%-------------------------------------------------------------------------
 
--spec create(CGroupPath :: string(),
+-spec create(CGroupPath :: nonempty_string(),
              OSPids :: list(pos_integer()),
              CGroupParameters :: list({string(), string()}),
              State :: #cgroups{}) ->
-    {ok, #cgroups{}} |
+    ok |
     {error, any()}.
 
-create(CGroupPath, OSPids, CGroupParameters,
+create([_ | _] = CGroupPath, OSPids, CGroupParameters,
        #cgroups{path = Path} = State) ->
     true = cgroup_path_valid(CGroupPath),
     CGroupPathFull = Path ++ CGroupPath,
@@ -99,12 +103,56 @@ create(CGroupPath, OSPids, CGroupParameters,
         true ->
             {error, {exists, CGroupPathFull}};
         false ->
-            case shell("mkdir -p \"~s\"", [CGroupPathFull]) of
-                {0, _} ->
-                    update(CGroupPath, OSPids, CGroupParameters, State);
-                {Status, Output} ->
-                    {error, {mkdir, Status, Output}}
-            end
+            create_cgroup(CGroupPath, OSPids, CGroupParameters, State)
+    end.
+
+%%-------------------------------------------------------------------------
+%% @doc
+%% ===Delete a specific cgroup.===
+%% The cgroup must not contain any OS processes for this
+%% function to succeed.
+%% @end
+%%-------------------------------------------------------------------------
+
+-spec delete(CGroupPath :: nonempty_string(),
+             State :: #cgroups{}) ->
+    ok |
+    {error, any()}.
+
+delete([_ | _] = CGroupPath,
+       #cgroups{path = Path}) ->
+    true = cgroup_path_valid(CGroupPath),
+    CGroupPathFull = Path ++ CGroupPath,
+    case shell("rmdir \"~s\"", [CGroupPathFull]) of
+        {0, _} ->
+            ok;
+        {Status, Output} ->
+            {error, {rmdir, Status, Output}}
+    end.
+
+%%-------------------------------------------------------------------------
+%% @doc
+%% ===Delete a specific cgroup and as many non-leaf cgroups as possible.===
+%% The cgroup must not contain any OS processes for this
+%% function to succeed.
+%% @end
+%%-------------------------------------------------------------------------
+
+-spec delete_recursive(CGroupPath :: nonempty_string(),
+                       State :: #cgroups{}) ->
+    ok |
+    {error, any()}.
+
+delete_recursive([_ | _] = CGroupPath,
+                 #cgroups{path = Path}) ->
+    true = cgroup_path_valid(CGroupPath),
+    CGroupPathFull = Path ++ CGroupPath,
+    case shell("rmdir \"~s\"", [CGroupPathFull]) of
+        {0, _} ->
+            _ = delete_recursive_subpath(subdirectory(CGroupPathFull), Path),
+            ok;
+        {Status, Output} ->
+            {error, {rmdir, Status, Output}}
     end.
 
 %%-------------------------------------------------------------------------
@@ -189,7 +237,8 @@ shell(Command, Arguments) ->
 
 %%-------------------------------------------------------------------------
 %% @doc
-%% ===.===
+%% ===Update a cgroup path.===
+%% May be used on the cgroup root path.
 %% @end
 %%-------------------------------------------------------------------------
 
@@ -197,40 +246,35 @@ shell(Command, Arguments) ->
              OSPids :: list(pos_integer()),
              CGroupParameters :: list({string(), string()}),
              State :: #cgroups{}) ->
-    {ok, #cgroups{}} |
+    ok |
     {error, any()}.
 
 update(CGroupPath, OSPids, CGroupParameters,
        #cgroups{version = Version,
-                path = Path} = State) ->
+                path = Path}) ->
     true = cgroup_path_valid(CGroupPath),
     CGroupPathFull = Path ++ CGroupPath,
-    case update_parameters(CGroupParameters, Version, CGroupPathFull) of
+    case update_parameters(CGroupParameters, Version, CGroupPathFull, Path) of
         ok ->
-            case update_pids(OSPids, Version, CGroupPathFull) of
-                ok ->
-                    {ok, State};
-                {error, _} = Error ->
-                    Error
-            end;
+            update_pids(OSPids, Version, CGroupPathFull);
         {error, _} = Error ->
             Error
     end.
 
 %%-------------------------------------------------------------------------
 %% @doc
-%% ===.===
+%% ===Update or create a specific cgroup.===
 %% @end
 %%-------------------------------------------------------------------------
 
--spec update_or_create(CGroupPath :: string(),
+-spec update_or_create(CGroupPath :: nonempty_string(),
                        OSPids :: list(pos_integer()),
                        CGroupParameters :: list({string(), string()}),
                        State :: #cgroups{}) ->
-    {ok, #cgroups{}} |
+    ok |
     {error, any()}.
 
-update_or_create(CGroupPath, OSPids, CGroupParameters,
+update_or_create([_ | _] = CGroupPath, OSPids, CGroupParameters,
                  #cgroups{path = Path} = State) ->
     true = cgroup_path_valid(CGroupPath),
     CGroupPathFull = Path ++ CGroupPath,
@@ -238,12 +282,7 @@ update_or_create(CGroupPath, OSPids, CGroupParameters,
         true ->
             update(CGroupPath, OSPids, CGroupParameters, State);
         false ->
-            case shell("mkdir -p \"~s\"", [CGroupPathFull]) of
-                {0, _} ->
-                    update(CGroupPath, OSPids, CGroupParameters, State);
-                {Status, Output} ->
-                    {error, {mkdir, Status, Output}}
-            end
+            create_cgroup(CGroupPath, OSPids, CGroupParameters, State)
     end.
 
 %%%------------------------------------------------------------------------
@@ -321,8 +360,7 @@ new_paths(PathV1, PathV2, undefined) ->
 new_paths(PathV1, PathV2, PathMounts) ->
     case shell("cat \"~s\"", [PathMounts]) of
         {0, Mounts} ->
-            MountsStr = erlang:binary_to_list(erlang:iolist_to_binary(Mounts)),
-            MountsL = string:tokens(MountsStr, "\n"),
+            MountsL = string:tokens(shell_output_string(Mounts), "\n"),
             {MountsPathV1,
              MountsPathV2} = new_mounts(MountsL),
             ResultV1 = if
@@ -357,33 +395,169 @@ new_mounts([Mount | MountsL], PathV1, PathV2) ->
             new_mounts(MountsL, PathV1, PathV2)
     end.
 
-subsystem([_ | _] = SubsystemParameter) ->
-    {Subsystem, _} = lists:splitwith(fun(C) -> C /= $. end, SubsystemParameter),
-    Subsystem.
+create_cgroup(CGroupPath, OSPids, CGroupParameters,
+              #cgroups{path = Path} = State) ->
+    CGroupPathFull = Path ++ CGroupPath,
+    case shell("mkdir -p \"~s\"", [CGroupPathFull]) of
+        {0, _} ->
+            case create_update(CGroupPathFull, Path) of
+                ok ->
+                    update(CGroupPath, OSPids, CGroupParameters, State);
+                {error, _} = Error ->
+                    Error
+            end;
+        {Status, Output} ->
+            {error, {mkdir, Status, Output}}
+    end.
 
-update_parameters(CGroupParameters, 1, CGroupPathFull) ->
+create_update(CGroupPathFull, Path) ->
+    case create_update_get(CGroupPathFull, "cpuset.cpus", Path) of
+        {ok, CPUS} ->
+            case create_update_get(CGroupPathFull, "cpuset.mems", Path) of
+                {ok, MEMS} ->
+                    if
+                        CPUS =:= undefined,
+                        MEMS =:= undefined ->
+                            ok;
+                        true ->
+                            create_update_set(CGroupPathFull, CPUS, MEMS, Path)
+                    end;
+                {error, _} = Error ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+create_update_set(CGroupPathFull, CPUS, MEMS, Path) ->
+    case create_update_set_subpath(CGroupPathFull, CPUS, MEMS, Path) of
+        ok ->
+            CGroupSubPathFull = CGroupPathFull ++ "/",
+            case create_update_set_value(CGroupSubPathFull,
+                                         "cpuset.cpus", CPUS) of
+                ok ->
+                    case create_update_set_value(CGroupSubPathFull,
+                                                 "cpuset.mems", MEMS) of
+                        ok ->
+                            ok;
+                        {error, _} = Error ->
+                            Error
+                    end;
+                {error, _} = Error ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+create_update_set_subpath(CGroupPathFull, CPUS, MEMS, Path) ->
+    case subdirectory(CGroupPathFull) of
+        Path ->
+            ok;
+        CGroupSubPathFull ->
+            case create_update_set_subpath(CGroupSubPathFull,
+                                           CPUS, MEMS, Path) of
+                ok ->
+                    case create_update_set_value(CGroupSubPathFull,
+                                                 "cpuset.cpus", CPUS) of
+                        ok ->
+                            case create_update_set_value(CGroupSubPathFull,
+                                                         "cpuset.mems", MEMS) of
+                                ok ->
+                                    ok;
+                                {error, _} = Error ->
+                                    Error
+                            end;
+                        {error, _} = Error ->
+                            Error
+                    end;
+                {error, _} = Error ->
+                    Error
+            end
+    end.
+
+create_update_set_value(_, _, undefined) ->
+    ok;
+create_update_set_value(CGroupSubPathFull, SubsystemParameter, Value) ->
+    case shell("cat \"~s~s\"", [CGroupSubPathFull, SubsystemParameter]) of
+        {0, OldValue} ->
+            NeedsUpdate = strip(shell_output_string(OldValue)) == "",
+            if
+                NeedsUpdate =:= true ->
+                    case shell("echo \"~s\" > \"~s~s\"",
+                               [Value, CGroupSubPathFull,
+                                SubsystemParameter]) of
+                        {0, _} ->
+                            ok;
+                        {Status, Output} ->
+                            ErrorReason = subsystem_parameter_error_reason(
+                                SubsystemParameter, "_set"),
+                            {error, {ErrorReason, Status, Output}}
+                    end;
+                NeedsUpdate =:= false ->
+                    ok
+            end;
+        {Status, Output} ->
+            ErrorReason = subsystem_parameter_error_reason(SubsystemParameter,
+                                                           "_check"),
+            {error, {ErrorReason, Status, Output}}
+    end.
+
+create_update_get(CGroupPathFull, SubsystemParameter, Path) ->
+    case shell("cat \"~s/~s\"", [CGroupPathFull, SubsystemParameter]) of
+        {0, Contents} ->
+            NeedsUpdate = strip(shell_output_string(Contents)) == "",
+            if
+                NeedsUpdate =:= true ->
+                    subsystem_parameter_subpath(subdirectory(CGroupPathFull),
+                                                SubsystemParameter, Path);
+                NeedsUpdate =:= false ->
+                    {ok, undefined}
+            end;
+        {Status, Output} ->
+            ErrorReason = subsystem_parameter_error_reason(SubsystemParameter,
+                                                           "_get"),
+            {error, {ErrorReason, Status, Output}}
+    end.
+
+delete_recursive_subpath(Path, Path) ->
+    ok;
+delete_recursive_subpath(CGroupSubPathFull, Path) ->
+    case shell("rmdir \"~s\"", [CGroupSubPathFull]) of
+        {0, _} ->
+            delete_recursive_subpath(subdirectory(CGroupSubPathFull), Path);
+        {_, _} ->
+            ok
+    end.
+
+update_parameters(CGroupParameters, 1, CGroupPathFull, _) ->
     update_parameters(CGroupParameters, CGroupPathFull);
-update_parameters(CGroupParameters, 2, CGroupPathFull) ->
+update_parameters(CGroupParameters, 2, CGroupPathFull, Path) ->
     Controllers = lists:usort([subsystem(SubsystemParameter)
                                || {SubsystemParameter, _} <- CGroupParameters]),
     ControlAdded = ["+" ++ Controller || Controller <- Controllers],
     ControlRemoved = ["-" ++ Controller || Controller <- Controllers],
-    CGroupSubPathFull = filename:dirname(CGroupPathFull) ++ "/",
-    case shell("echo \"~s\" > \"~s/cgroup.subtree_control\"",
-               [string:join(ControlAdded, " "),
-                CGroupSubPathFull]) of
-        {0, _} ->
+    CGroupSubPathFull = subdirectory(CGroupPathFull),
+    case subtree_control_add(CGroupSubPathFull,
+                             string:join(ControlAdded, " "),
+                             Path) of
+        ok ->
             Result = update_parameters(CGroupParameters, CGroupPathFull),
-            case shell("echo \"~s\" > \"~s/cgroup.subtree_control\"",
-                       [string:join(ControlRemoved, " "),
-                        CGroupSubPathFull]) of
-                {0, _} ->
+            case subtree_control_remove(CGroupSubPathFull,
+                                        string:join(ControlRemoved, " "),
+                                        Path) of
+                ok ->
                     Result;
-                {Status, Output} ->
-                    {error, {subtree_control, Status, Output}}
+                {error, _} = Error ->
+                    if
+                        Result =:= ok ->
+                            Error;
+                        true ->
+                            Result
+                    end
             end;
-        {Status, Output} ->
-            {error, {subtree_control, Status, Output}}
+        {error, _} = Error ->
+            Error
     end.
 
 update_parameters([], _) ->
@@ -412,6 +586,89 @@ update_pids([OSPid | OSPids], CGroupPathFull) ->
             {error, {procs, Status, Output}}
     end.
 
+subsystem([_ | _] = SubsystemParameter) ->
+    {Subsystem, _} = lists:splitwith(fun(C) -> C /= $. end, SubsystemParameter),
+    Subsystem.
+
+subsystem_parameter_subpath(Path, SubsystemParameter, Path) ->
+    subsystem_parameter_get(Path, SubsystemParameter);
+subsystem_parameter_subpath(CGroupSubPathFull, SubsystemParameter, Path) ->
+    case subsystem_parameter_get(CGroupSubPathFull, SubsystemParameter) of
+        {ok, ""} ->
+            subsystem_parameter_subpath(subdirectory(CGroupSubPathFull),
+                                        SubsystemParameter, Path);
+        {ok, _} = Success ->
+            Success;
+        {error, _} = Error ->
+            Error
+    end.
+
+subsystem_parameter_get(CGroupSubPathFull, SubsystemParameter) ->
+    case shell("cat \"~s~s\"", [CGroupSubPathFull, SubsystemParameter]) of
+        {0, Contents} ->
+            {ok, strip(shell_output_string(Contents))};
+        {Status, Output} ->
+            ErrorReason = subsystem_parameter_error_reason(SubsystemParameter,
+                                                           "_get"),
+            {error, {ErrorReason, Status, Output}}
+    end.
+
+subsystem_parameter_error_reason(SubsystemParameter, Suffix) ->
+    erlang:list_to_atom(lists:map(fun(C) ->
+        if
+            C == $. ->
+                $_;
+            true ->
+                C
+        end
+    end, SubsystemParameter) ++ Suffix).
+
+subtree_control_add(Path, Value, Path) ->
+    subtree_control_set(Path, Value);
+subtree_control_add(CGroupSubPathFull, Value, Path) ->
+    case subtree_control_add(subdirectory(CGroupSubPathFull),
+                             Value, Path) of
+        ok ->
+            subtree_control_set(CGroupSubPathFull, Value);
+        {error, _} = Error ->
+            Error
+    end.
+
+subtree_control_remove(Path, Value, Path) ->
+    subtree_control_set(Path, Value);
+subtree_control_remove(CGroupSubPathFull, Value, Path) ->
+    case subtree_control_set(CGroupSubPathFull, Value) of
+        ok ->
+            subtree_control_remove(subdirectory(CGroupSubPathFull),
+                                   Value, Path);
+        {error, _} = Error ->
+            Error
+    end.
+
+subtree_control_set(CGroupSubPathFull, Value) ->
+    case shell("echo \"~s\" > \"~scgroup.subtree_control\"",
+               [Value, CGroupSubPathFull]) of
+        {0, _} ->
+            ok;
+        {Status, Output} ->
+            {error, {subtree_control, Status, Output}}
+    end.
+
+subdirectory(Path) ->
+    case lists:reverse(Path) of
+        [$/ | PathRev] ->
+            filename:dirname(lists:reverse(PathRev)) ++ "/";
+        _ ->
+            filename:dirname(Path) ++ "/"
+    end.
+
+strip(Value) ->
+    lists:filter(fun(C) ->
+        not (C == $  orelse C == $\t orelse C == $\n orelse C == $\r)
+    end, Value).
+
+cgroup_path_valid([]) ->
+    true;
 cgroup_path_valid([_ | _] = CGroupPath) ->
     ($/ /= hd(CGroupPath)) andalso
     ($/ /= hd(lists:reverse(CGroupPath))).
@@ -432,4 +689,7 @@ shell_output(Shell, Output) ->
         {Shell, {exit_status, Status}} ->
             {Status, lists:reverse(Output)}
     end.
+
+shell_output_string(IOList) ->
+    erlang:binary_to_list(erlang:iolist_to_binary(IOList)).
 
