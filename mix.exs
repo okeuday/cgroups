@@ -6,7 +6,7 @@ defmodule CGroups.Mixfile do
 
   def project do
     [app: :cgroups,
-     version: "1.7.0",
+     version: "1.7.1",
      language: :erlang,
      description: description(),
      package: package(),
