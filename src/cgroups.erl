@@ -573,12 +573,12 @@ update_parameters(CGroupParameters, 2, CGroupPathFull, Path) ->
     ControlRemoved = ["-" ++ Controller || Controller <- Controllers],
     CGroupSubPathFull = subdirectory(CGroupPathFull),
     case subtree_control_add(CGroupSubPathFull,
-                             lists:join(ControlAdded, $ ),
+                             lists:join($ , ControlAdded),
                              Path) of
         ok ->
             Result = update_parameters(CGroupParameters, CGroupPathFull),
             case subtree_control_remove(CGroupSubPathFull,
-                                        lists:join(ControlRemoved, $ ),
+                                        lists:join($ , ControlRemoved),
                                         Path) of
                 ok ->
                     Result;
