@@ -45,7 +45,8 @@
          new/1,
          shell/2,
          update/4,
-         update_or_create/4]).
+         update_or_create/4,
+         version/1]).
 
 -record(cgroups,
     {
@@ -281,10 +282,10 @@ update(CGroupPath, OSPids, CGroupParameters,
             {error, {invalid_cgroup_parameters, CGroupParameters}};
         true ->
             CGroupPathFull = Path ++ CGroupPath,
-            case update_parameters(CGroupParameters, Version,
+            case update_parameters(Version, CGroupParameters,
                                    CGroupPathFull, Path) of
                 ok ->
-                    update_pids(OSPids, Version, CGroupPathFull);
+                    update_pids(OSPids, CGroupPathFull);
                 {error, _} = Error ->
                     Error
             end
@@ -318,6 +319,18 @@ update_or_create([_ | _] = CGroupPath, OSPids, CGroupParameters,
                     create_cgroup(CGroupPath, OSPids, CGroupParameters, State)
             end
     end.
+
+%%-------------------------------------------------------------------------
+%% @doc
+%% ===The cgroup version used.===
+%% @end
+%%-------------------------------------------------------------------------
+
+-spec version(#cgroups{}) ->
+    pos_integer().
+
+version(#cgroups{version = Version}) ->
+    Version.
 
 %%%------------------------------------------------------------------------
 %%% Private functions
@@ -430,11 +443,12 @@ new_mounts([Mount | MountsL], PathV1, PathV2) ->
     end.
 
 create_cgroup(CGroupPath, OSPids, CGroupParameters,
-              #cgroups{path = Path} = State) ->
+              #cgroups{version = Version,
+                       path = Path} = State) ->
     CGroupPathFull = Path ++ CGroupPath,
     case shell("mkdir -p \"~s\"", [CGroupPathFull]) of
         {0, _} ->
-            case create_update(CGroupPathFull, Path) of
+            case create_update(Version, CGroupPathFull, Path) of
                 ok ->
                     update(CGroupPath, OSPids, CGroupParameters, State);
                 {error, _} = Error ->
@@ -444,7 +458,7 @@ create_cgroup(CGroupPath, OSPids, CGroupParameters,
             {error, {mkdir, Status, Output}}
     end.
 
-create_update(CGroupPathFull, Path) ->
+create_update(1, CGroupPathFull, Path) ->
     case create_update_get(CGroupPathFull, "cpuset.cpus", Path) of
         {ok, CPUS} ->
             case create_update_get(CGroupPathFull, "cpuset.mems", Path) of
@@ -461,7 +475,9 @@ create_update(CGroupPathFull, Path) ->
             end;
         {error, _} = Error ->
             Error
-    end.
+    end;
+create_update(2, _, _) ->
+    ok.
 
 create_update_set(CGroupPathFull, CPUS, MEMS, Path) ->
     case create_update_set_subpath(CGroupPathFull, CPUS, MEMS, Path) of
@@ -564,32 +580,17 @@ delete_recursive_subpath(CGroupSubPathFull, Path) ->
             ok
     end.
 
-update_parameters(CGroupParameters, 1, CGroupPathFull, _) ->
+update_parameters(1, CGroupParameters, CGroupPathFull, _) ->
     update_parameters(CGroupParameters, CGroupPathFull);
-update_parameters(CGroupParameters, 2, CGroupPathFull, Path) ->
+update_parameters(2, CGroupParameters, CGroupPathFull, Path) ->
     Controllers = lists:usort([subsystem(SubsystemParameter)
                                || {SubsystemParameter, _} <- CGroupParameters]),
     ControlAdded = ["+" ++ Controller || Controller <- Controllers],
-    ControlRemoved = ["-" ++ Controller || Controller <- Controllers],
-    CGroupSubPathFull = subdirectory(CGroupPathFull),
-    case subtree_control_add(CGroupSubPathFull,
+    case subtree_control_add(CGroupPathFull,
                              lists:join($ , ControlAdded),
                              Path) of
         ok ->
-            Result = update_parameters(CGroupParameters, CGroupPathFull),
-            case subtree_control_remove(CGroupSubPathFull,
-                                        lists:join($ , ControlRemoved),
-                                        Path) of
-                ok ->
-                    Result;
-                {error, _} = Error ->
-                    if
-                        Result =:= ok ->
-                            Error;
-                        true ->
-                            Result
-                    end
-            end;
+            update_parameters(CGroupParameters, CGroupPathFull);
         {error, _} = Error ->
             Error
     end.
@@ -605,9 +606,6 @@ update_parameters([{SubsystemParameter, Value} | CGroupParameters],
         {Status, Output} ->
             {error, {subsystem_parameter, Status, Output}}
     end.
-
-update_pids(OSPids, _, CGroupPathFull) ->
-    update_pids(OSPids, CGroupPathFull).
 
 update_pids([], _) ->
     ok;
@@ -664,17 +662,6 @@ subtree_control_add(CGroupSubPathFull, Value, Path) ->
                              Value, Path) of
         ok ->
             subtree_control_set(CGroupSubPathFull, Value);
-        {error, _} = Error ->
-            Error
-    end.
-
-subtree_control_remove(Path, Value, Path) ->
-    subtree_control_set(Path, Value);
-subtree_control_remove(CGroupSubPathFull, Value, Path) ->
-    case subtree_control_set(CGroupSubPathFull, Value) of
-        ok ->
-            subtree_control_remove(subdirectory(CGroupSubPathFull),
-                                   Value, Path);
         {error, _} = Error ->
             Error
     end.
