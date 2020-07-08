@@ -76,8 +76,9 @@
 %%-------------------------------------------------------------------------
 %% @doc
 %% ===Create a specific cgroup.===
-%% Files cpuset.cpus and cpuset.mems are set if they are not initialized
-%% due to cgroup.clone_children (using the root values).
+%% With cgroups v1, files cpuset.cpus and cpuset.mems are set
+%% if they are not initialized due to cgroup.clone_children
+%% (using the root values).
 %% @end
 %%-------------------------------------------------------------------------
 
@@ -459,16 +460,17 @@ create_cgroup(CGroupPath, OSPids, CGroupParameters,
     end.
 
 create_update(1, CGroupPathFull, Path) ->
-    case create_update_get(CGroupPathFull, "cpuset.cpus", Path) of
+    case create_update_v1_get(CGroupPathFull, "cpuset.cpus", Path) of
         {ok, CPUS} ->
-            case create_update_get(CGroupPathFull, "cpuset.mems", Path) of
+            case create_update_v1_get(CGroupPathFull, "cpuset.mems", Path) of
                 {ok, MEMS} ->
                     if
                         CPUS =:= undefined,
                         MEMS =:= undefined ->
                             ok;
                         true ->
-                            create_update_set(CGroupPathFull, CPUS, MEMS, Path)
+                            create_update_v1_set(CGroupPathFull,
+                                                 CPUS, MEMS, Path)
                     end;
                 {error, _} = Error ->
                     Error
@@ -479,15 +481,15 @@ create_update(1, CGroupPathFull, Path) ->
 create_update(2, _, _) ->
     ok.
 
-create_update_set(CGroupPathFull, CPUS, MEMS, Path) ->
-    case create_update_set_subpath(CGroupPathFull, CPUS, MEMS, Path) of
+create_update_v1_set(CGroupPathFull, CPUS, MEMS, Path) ->
+    case create_update_v1_set_subpath(CGroupPathFull, CPUS, MEMS, Path) of
         ok ->
             CGroupSubPathFull = CGroupPathFull ++ "/",
-            case create_update_set_value(CGroupSubPathFull,
-                                         "cpuset.cpus", CPUS) of
+            case create_update_v1_set_value(CGroupSubPathFull,
+                                            "cpuset.cpus", CPUS) of
                 ok ->
-                    case create_update_set_value(CGroupSubPathFull,
-                                                 "cpuset.mems", MEMS) of
+                    case create_update_v1_set_value(CGroupSubPathFull,
+                                                    "cpuset.mems", MEMS) of
                         ok ->
                             ok;
                         {error, _} = Error ->
@@ -500,19 +502,20 @@ create_update_set(CGroupPathFull, CPUS, MEMS, Path) ->
             Error
     end.
 
-create_update_set_subpath(CGroupPathFull, CPUS, MEMS, Path) ->
+create_update_v1_set_subpath(CGroupPathFull, CPUS, MEMS, Path) ->
     case subdirectory(CGroupPathFull) of
         Path ->
             ok;
         CGroupSubPathFull ->
-            case create_update_set_subpath(CGroupSubPathFull,
-                                           CPUS, MEMS, Path) of
+            case create_update_v1_set_subpath(CGroupSubPathFull,
+                                              CPUS, MEMS, Path) of
                 ok ->
-                    case create_update_set_value(CGroupSubPathFull,
-                                                 "cpuset.cpus", CPUS) of
+                    case create_update_v1_set_value(CGroupSubPathFull,
+                                                    "cpuset.cpus", CPUS) of
                         ok ->
-                            case create_update_set_value(CGroupSubPathFull,
-                                                         "cpuset.mems", MEMS) of
+                            case create_update_v1_set_value(CGroupSubPathFull,
+                                                            "cpuset.mems",
+                                                            MEMS) of
                                 ok ->
                                     ok;
                                 {error, _} = Error ->
@@ -526,9 +529,9 @@ create_update_set_subpath(CGroupPathFull, CPUS, MEMS, Path) ->
             end
     end.
 
-create_update_set_value(_, _, undefined) ->
+create_update_v1_set_value(_, _, undefined) ->
     ok;
-create_update_set_value(CGroupSubPathFull, SubsystemParameter, Value) ->
+create_update_v1_set_value(CGroupSubPathFull, SubsystemParameter, Value) ->
     case shell("cat \"~s~s\"", [CGroupSubPathFull, SubsystemParameter]) of
         {0, OldValue} ->
             NeedsUpdate = strip(shell_output_string(OldValue)) == "",
@@ -553,7 +556,7 @@ create_update_set_value(CGroupSubPathFull, SubsystemParameter, Value) ->
             {error, {ErrorReason, Status, Output}}
     end.
 
-create_update_get(CGroupPathFull, SubsystemParameter, Path) ->
+create_update_v1_get(CGroupPathFull, SubsystemParameter, Path) ->
     case shell("cat \"~s/~s\"", [CGroupPathFull, SubsystemParameter]) of
         {0, Contents} ->
             NeedsUpdate = strip(shell_output_string(Contents)) == "",
