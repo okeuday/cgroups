@@ -586,7 +586,7 @@ update_parameters(2, CGroupParameters, CGroupPathFull, Path) ->
     Controllers = lists:usort([subsystem(SubsystemParameter)
                                || {SubsystemParameter, _} <- CGroupParameters]),
     ControlAdded = ["+" ++ Controller || Controller <- Controllers],
-    case subtree_control_add(CGroupPathFull,
+    case subtree_control_add(subdirectory(CGroupPathFull, Path),
                              lists:join($ , ControlAdded),
                              Path) of
         ok ->
@@ -674,6 +674,11 @@ subtree_control_set(CGroupSubPathFull, Value) ->
         {Status, Output} ->
             {error, {subtree_control, Status, Output}}
     end.
+
+subdirectory(Path, Path) ->
+    Path;
+subdirectory(Path, _) ->
+    subdirectory(Path).
 
 subdirectory(Path) ->
     case lists:reverse(Path) of
