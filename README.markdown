@@ -2,8 +2,8 @@ Erlang cgroups interface
 ========================
 
 An interface for cgroups manipulation that handles cgroup version details
-(i.e., differences between v1 and v2) and provides safe usage of the
-cgroups filesystem mount.
+(i.e., differences between [v1](https://www.kernel.org/doc/Documentation/cgroup-v1/cgroups.txt) and [v2](https://github.com/torvalds/linux/blob/master/Documentation/admin-guide/cgroup-v2.rst))
+and provides safe usage of the cgroups filesystem mount.
 
 Build
 -----
