@@ -36,7 +36,7 @@ Troubleshooting
 
 **`cgroups:update/4` and `cgroups:update_or_create/4` Errors:**
 * Either root execution of beam.smp or
-  `setcap cap_sys_admin+ep /path/to/beam.smp` before execution is required
+  `setcap cap_sys_admin=+ep /path/to/beam.smp` before execution is required
   for most usage of cgroups
 * A Linux/systemd setup may have the control group setup mode set to `hybrid`
   due to it being the [recommended default](https://github.com/systemd/systemd/blob/v239/NEWS#L1365)
